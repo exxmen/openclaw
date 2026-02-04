@@ -87,7 +87,7 @@ RUN mkdir -p /go/bin
 # ----------------------------------------------------------------------------
 FROM base AS tools-fetch
 
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils bzip2 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /binaries
@@ -132,10 +132,14 @@ RUN ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") &
     | tar -xz && chmod +x blogwatcher 2>/dev/null) || echo "blogwatcher: skipping"
 
 # sherpa-onnx (TTS runtime + voice model)
+# Note: aarch64 releases have a -cpu suffix, x64 releases do not
 WORKDIR /sherpa
-RUN SHERPA_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x64") && \
-    curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.23/sherpa-onnx-v1.12.23-linux-${SHERPA_ARCH}-shared.tar.bz2 \
-    | tar -xj --strip-components=1 || echo "sherpa-onnx download failed, skipping"
+RUN if [ "$TARGETARCH" = "arm64" ]; then \
+      SHERPA_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.23/sherpa-onnx-v1.12.23-linux-aarch64-shared-cpu.tar.bz2"; \
+    else \
+      SHERPA_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.23/sherpa-onnx-v1.12.23-linux-x64-shared.tar.bz2"; \
+    fi && \
+    curl -fsSL "$SHERPA_URL" | tar -xj --strip-components=1 || echo "sherpa-onnx download failed, skipping"
 RUN curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-lessac-high.tar.bz2 \
     | tar -xj -C /sherpa || echo "sherpa-onnx models download failed, skipping"
 
