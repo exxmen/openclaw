@@ -1,0 +1,336 @@
+# syntax=docker/dockerfile:1.4
+# ============================================================================
+# OPENCLAW OPTIMIZED DOCKERFILE (MULTI-ARCH: amd64 + arm64)
+# Multi-stage build with all Linux-compatible skill binaries baked in
+# Build targets: runtime (slim) | runtime-with-models (full)
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# Stage 1: BASE - Minimal Node.js with tini
+# ----------------------------------------------------------------------------
+FROM node:22-bookworm-slim AS base
+
+ARG TARGETARCH
+ARG TARGETPLATFORM
+
+# Install tini for proper signal handling
+RUN apt-get update && apt-get install -y --no-install-recommends tini \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+# ----------------------------------------------------------------------------
+# Stage 2: TOOLS-APT - Runtime packages from APT
+# ----------------------------------------------------------------------------
+FROM base AS tools-apt
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    # Core utilities
+    curl \
+    ca-certificates \
+    jq \
+    ripgrep \
+    tmux \
+    sqlite3 \
+    gnupg \
+    # Media processing
+    ffmpeg \
+    # Python runtime (for nano-pdf, etc.)
+    python3 \
+    python3-pip \
+    # Build essentials (needed for some npm packages)
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install GitHub CLI (gh)
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null \
+    && apt-get update \
+    && apt-get install -y gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install 1Password CLI (op)
+RUN curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/$(dpkg --print-architecture) stable main" | tee /etc/apt/sources.list.d/1password.list \
+    && mkdir -p /etc/debsig/policies/AC2D62742012EA22/ \
+    && curl -sS https://downloads.1password.com/linux/debian/debsig/1password.pol | tee /etc/debsig/policies/AC2D62742012EA22/1password.pol \
+    && mkdir -p /usr/share/debsig/keyrings/AC2D62742012EA22 \
+    && curl -sS https://downloads.1password.com/linux/keys/1password.asc | gpg --dearmor --output /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg \
+    && apt-get update && apt-get install -y 1password-cli \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----------------------------------------------------------------------------
+# Stage 3: GO-BUILDER - Build Go binaries (currently all disabled)
+# ----------------------------------------------------------------------------
+FROM golang:1-bookworm AS go-builder
+
+# Build eightctl (Eight Sleep CLI)
+# DISABLED: eightctl latest version has Go module structure issues
+# RUN --mount=type=cache,target=/go/pkg/mod \
+#     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install -ldflags="-s -w" github.com/steipete/eightctl@latest
+
+# Build gifgrep (GIF search CLI)
+# DISABLED: gifgrep latest version has Go module structure issues
+# RUN --mount=type=cache,target=/go/pkg/mod \
+#     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go install -ldflags="-s -w" github.com/steipete/gifgrep@latest
+
+# Create empty directory since all Go binaries are disabled
+RUN mkdir -p /go/bin
+
+# ----------------------------------------------------------------------------
+# Stage 4: TOOLS-FETCH - Download pre-built binaries
+# ----------------------------------------------------------------------------
+FROM base AS tools-fetch
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates xz-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /binaries
+
+# Optional skill binaries - continue on failure
+# Note: Many of these archives have inconsistent internal file naming
+# We extract everything and try to find/chmod the expected binary
+
+# gogcli (Gmail/Calendar/Drive CLI) - binary is named 'gog'
+RUN ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+    (curl -fsSL https://github.com/steipete/gogcli/releases/latest/download/gogcli_0.9.0_linux_${ARCH_SUFFIX}.tar.gz \
+    | tar -xz && chmod +x gog 2>/dev/null) || echo "gogcli: skipping"
+
+# goplaces (Google Places CLI)
+RUN ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+    (curl -fsSL https://github.com/steipete/goplaces/releases/latest/download/goplaces_0.2.1_linux_${ARCH_SUFFIX}.tar.gz \
+    | tar -xz && chmod +x goplaces 2>/dev/null) || echo "goplaces: skipping"
+
+# himalaya (Email CLI - IMAP/SMTP)
+RUN ARCH_NAME=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x86_64") && \
+    (curl -fsSL https://github.com/pimalaya/himalaya/releases/download/v1.1.0/himalaya.${ARCH_NAME}-linux.tgz \
+    | tar -xz && chmod +x himalaya 2>/dev/null) || echo "himalaya: skipping"
+
+# blucli (Bluesky CLI)
+RUN ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+    (curl -fsSL https://github.com/steipete/blucli/releases/download/v0.1.3/blucli-linux-${ARCH_SUFFIX}.tar.gz \
+    | tar -xz && chmod +x blu 2>/dev/null) || echo "blucli: skipping"
+
+# ordercli (Restaurant order CLI)
+RUN ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+    (curl -fsSL https://github.com/steipete/ordercli/releases/download/v0.1.0/ordercli_0.1.0_linux_${ARCH_SUFFIX}.tar.gz \
+    | tar -xz && chmod +x ordercli 2>/dev/null) || echo "ordercli: skipping"
+
+# sonoscli (Sonos speaker CLI)
+RUN ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+    (curl -fsSL https://github.com/steipete/sonoscli/releases/download/v0.1.0/sonoscli_0.1.0_linux_${ARCH_SUFFIX}.tar.gz \
+    | tar -xz && chmod +x sonoscli 2>/dev/null) || echo "sonoscli: skipping"
+
+# blogwatcher (Blog monitoring CLI)
+RUN ARCH_SUFFIX=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "amd64") && \
+    (curl -fsSL https://github.com/Hyaxia/blogwatcher/releases/download/v0.0.2/blogwatcher_0.0.2_linux_${ARCH_SUFFIX}.tar.gz \
+    | tar -xz && chmod +x blogwatcher 2>/dev/null) || echo "blogwatcher: skipping"
+
+# sherpa-onnx (TTS runtime + voice model)
+WORKDIR /sherpa
+RUN SHERPA_ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "aarch64" || echo "x64") && \
+    curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.12.23/sherpa-onnx-v1.12.23-linux-${SHERPA_ARCH}-shared.tar.bz2 \
+    | tar -xj --strip-components=1 || echo "sherpa-onnx download failed, skipping"
+RUN curl -fsSL https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/vits-piper-en_US-lessac-high.tar.bz2 \
+    | tar -xj -C /sherpa || echo "sherpa-onnx models download failed, skipping"
+
+# ----------------------------------------------------------------------------
+# Stage 5: APP-BUILD - Build OpenClaw application
+# ----------------------------------------------------------------------------
+FROM base AS app-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates git unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Bun (required for build scripts)
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Enable corepack for pnpm
+RUN corepack enable
+
+WORKDIR /app
+
+# Copy package files first for layer caching
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY ui/package.json ./ui/package.json
+COPY patches ./patches
+COPY scripts ./scripts
+
+# Install dependencies with cache mount
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
+
+# Copy source and build
+COPY . .
+RUN OPENCLAW_A2UI_SKIP_MISSING=1 pnpm build
+
+# Build UI
+ENV OPENCLAW_PREFER_PNPM=1
+RUN pnpm ui:install && pnpm ui:build
+
+# ----------------------------------------------------------------------------
+# Stage 6: APP-DEPS-PROD - Production dependencies only
+# ----------------------------------------------------------------------------
+FROM base AS app-deps-prod
+
+RUN corepack enable
+
+WORKDIR /app
+
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml .npmrc ./
+COPY patches ./patches
+COPY scripts ./scripts
+
+RUN --mount=type=cache,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile --prod
+
+# ----------------------------------------------------------------------------
+# Stage 7: NODE-TOOLS - npm global packages (placeholder)
+# ----------------------------------------------------------------------------
+FROM base AS node-tools
+
+# NOTE: This stage is a placeholder for future npm global packages.
+# Skills like clawdhub, mcporter, oracle are NOT npm packages - they are
+# internal OpenClaw skills managed via the workspace/skills system.
+# If you need to add npm global packages in the future, add them here.
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+# Placeholder: no global npm packages currently needed
+# RUN npm install -g <package>@latest
+
+# ----------------------------------------------------------------------------
+# Stage 8: LANG-TOOLS - Bun, UV, QMD, nano-pdf
+# ----------------------------------------------------------------------------
+FROM base AS lang-tools
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates python3 python3-pip unzip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Bun
+RUN curl -fsSL https://bun.sh/install | bash
+ENV PATH="/root/.bun/bin:${PATH}"
+
+# Install UV (fast Python package manager)
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+# Install QMD (Query Markdown Documents) via Bun from GitHub
+RUN bun install -g github:tobi/qmd
+
+# Install nano-pdf via UV
+RUN uv tool install nano-pdf
+
+# ----------------------------------------------------------------------------
+# Stage 9: MODELS - QMD GGUF models (isolated for caching)
+# ----------------------------------------------------------------------------
+FROM base AS models
+
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /models
+
+# QMD embedding model (~300 MB) - from public ggml-org repo
+RUN curl -fsSL -o embeddinggemma-300M-Q8_0.gguf \
+    https://huggingface.co/ggml-org/embeddinggemma-300M-GGUF/resolve/main/embeddinggemma-300M-Q8_0.gguf \
+    && echo "embeddinggemma downloaded"
+
+# QMD reranker model (~640 MB) - from public ggml-org repo
+RUN curl -fsSL -o qwen3-reranker-0.6b-q8_0.gguf \
+    https://huggingface.co/ggml-org/Qwen3-Reranker-0.6B-Q8_0-GGUF/resolve/main/qwen3-reranker-0.6b-q8_0.gguf \
+    && echo "qwen3-reranker downloaded"
+
+# QMD query expansion model (~1.1 GB) - from public tobil repo
+RUN curl -fsSL -o qmd-query-expansion-1.7B-q4_k_m.gguf \
+    https://huggingface.co/tobil/qmd-query-expansion-1.7B-gguf/resolve/main/qmd-query-expansion-1.7B-q4_k_m.gguf \
+    && echo "qmd-query-expansion downloaded"
+
+# List downloaded models
+RUN ls -la /models/*.gguf
+
+# ----------------------------------------------------------------------------
+# Stage 10: RUNTIME - Final image WITHOUT models (slim target)
+# ----------------------------------------------------------------------------
+FROM tools-apt AS runtime
+
+# Create non-root user (remove node user if exists, as it uses UID 1000)
+RUN (userdel -r node 2>/dev/null || true) && useradd -m -s /bin/bash -u 1001 openclaw
+
+# Copy Go binaries from go-builder
+# DISABLED: eightctl has build issues
+# COPY --from=go-builder /go/bin/eightctl /usr/local/bin/
+# DISABLED: gifgrep has Go module structure issues
+# COPY --from=go-builder /go/bin/gifgrep /usr/local/bin/
+
+# Copy pre-built binaries from tools-fetch (only if they exist)
+COPY --from=tools-fetch /binaries /tmp/binaries
+RUN for bin in gog goplaces himalaya blu ordercli sonoscli blogwatcher; do \
+      if [ -f "/tmp/binaries/$bin" ]; then \
+        cp "/tmp/binaries/$bin" /usr/local/bin/ && chmod +x "/usr/local/bin/$bin"; \
+      fi; \
+    done && rm -rf /tmp/binaries
+
+# Copy sherpa-onnx if available
+COPY --from=tools-fetch /sherpa /tmp/sherpa
+RUN if [ -d /tmp/sherpa/bin ] && [ "$(ls -A /tmp/sherpa/bin 2>/dev/null)" ]; then \
+      mkdir -p /opt/sherpa-onnx && cp -r /tmp/sherpa/* /opt/sherpa-onnx/; \
+    fi && rm -rf /tmp/sherpa
+ENV LD_LIBRARY_PATH="/opt/sherpa-onnx/lib:${LD_LIBRARY_PATH}"
+ENV PATH="/opt/sherpa-onnx/bin:${PATH}"
+
+# Copy global npm tools (node_modules always, binaries only if exist)
+COPY --from=node-tools /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN for bin in clawdhub mcporter oracle; do \
+      if [ -f "/usr/local/lib/node_modules/.bin/$bin" ]; then \
+        ln -sf "/usr/local/lib/node_modules/.bin/$bin" /usr/local/bin/; \
+      fi; \
+    done
+
+# Copy Bun and UV from lang-tools
+COPY --from=lang-tools /root/.bun /home/openclaw/.bun
+COPY --from=lang-tools /root/.local /home/openclaw/.local
+ENV PATH="/home/openclaw/.bun/bin:/home/openclaw/.local/bin:${PATH}"
+
+# Copy application from app-build
+COPY --from=app-build /app/dist /app/dist
+COPY --from=app-build /app/skills /app/skills
+COPY --from=app-build /app/extensions /app/extensions
+COPY --from=app-build /app/docs /app/docs
+COPY --from=app-build /app/package.json /app/
+
+# Copy production dependencies
+COPY --from=app-deps-prod /app/node_modules /app/node_modules
+
+# Fix ownership
+RUN chown -R openclaw:openclaw /app /home/openclaw
+
+WORKDIR /app
+USER openclaw
+
+ENV NODE_ENV=production
+ENV HOME=/home/openclaw
+
+ENTRYPOINT ["/usr/bin/tini", "--"]
+CMD ["node", "dist/index.js", "gateway", "--allow-unconfigured"]
+
+# ----------------------------------------------------------------------------
+# Stage 11: RUNTIME-WITH-MODELS - Full image with QMD models
+# ----------------------------------------------------------------------------
+FROM runtime AS runtime-with-models
+
+USER root
+COPY --from=models /models /home/openclaw/.qmd/models
+RUN chown -R openclaw:openclaw /home/openclaw/.qmd
+USER openclaw
+
+ENV QMD_MODELS_DIR=/home/openclaw/.qmd/models
