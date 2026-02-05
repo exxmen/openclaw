@@ -4,6 +4,15 @@
 # Multi-stage build with all Linux-compatible skill binaries baked in
 # Build targets: runtime (slim) | runtime-with-models (full)
 # ============================================================================
+#
+# BROWSER SUPPORT:
+# This image includes Chromium for headless browser automation.
+# Configure in openclaw.json:
+#   browser.enabled: true
+#   browser.headless: true
+#   browser.noSandbox: true
+#   browser.executablePath: "/usr/bin/chromium"
+# ============================================================================
 
 # ----------------------------------------------------------------------------
 # Stage 1: BASE - Minimal Node.js with tini
@@ -38,12 +47,19 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     gnupg \
     # Media processing
     ffmpeg \
+    # Browser automation (Chromium for playwright-core)
+    chromium \
+    fonts-liberation \
+    fonts-noto-color-emoji \
     # Python runtime (for nano-pdf, etc.)
     python3 \
     python3-pip \
     # Build essentials (needed for some npm packages)
     build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Chromium environment for headless operation
+ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage"
 
 # Install GitHub CLI (gh)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
