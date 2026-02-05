@@ -199,6 +199,8 @@ export async function launchOpenClawChrome(
       "--disable-session-crashed-bubble",
       "--hide-crash-restore-bubble",
       "--password-store=basic",
+      "--disable-breakpad",
+      "--disable-crash-reporter",
     ];
 
     if (resolved.headless) {

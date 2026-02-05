@@ -59,7 +59,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     && rm -rf /var/lib/apt/lists/*
 
 # Chromium environment for headless operation
-ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage"
+# Note: --disable-breakpad and --disable-crash-reporter are required in Docker
+# to prevent "chrome_crashpad_handler: --database is required" errors
+ENV CHROMIUM_FLAGS="--no-sandbox --disable-gpu --disable-software-rasterizer --disable-dev-shm-usage --disable-breakpad --disable-crash-reporter"
 
 # Install GitHub CLI (gh)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
