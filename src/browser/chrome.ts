@@ -209,6 +209,7 @@ export async function launchOpenClawChrome(
     if (resolved.noSandbox) {
       args.push("--no-sandbox");
       args.push("--disable-setuid-sandbox");
+      args.push("--disable-seccomp-filter-sandbox");
     }
     if (process.platform === "linux") {
       args.push("--disable-dev-shm-usage");
