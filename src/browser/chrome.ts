@@ -226,6 +226,9 @@ export async function launchOpenClawChrome(
         ...process.env,
         // Reduce accidental sharing with the user's env.
         HOME: os.homedir(),
+        // Disable crashpad handler in Docker containers
+        CHROME_DEVEL_SANDBOX: "",
+        CRASHPAD_HANDLER_DISABLE: "1",
       },
     });
   };
