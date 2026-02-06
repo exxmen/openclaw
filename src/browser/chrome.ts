@@ -250,8 +250,6 @@ export async function launchOpenClawChrome(
         HOME: effectiveHome,
       },
     });
-      },
-    });
   };
 
   const startedAt = Date.now();
