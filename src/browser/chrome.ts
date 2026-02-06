@@ -56,7 +56,16 @@ export type RunningChrome = {
 };
 
 function resolveBrowserExecutable(resolved: ResolvedBrowserConfig): BrowserExecutable | null {
-  return resolveBrowserExecutableForPlatform(resolved, process.platform);
+  const exe = resolveBrowserExecutableForPlatform(resolved, process.platform);
+  if (!exe) return null;
+
+  // On Linux with Debian/Ubuntu chromium package, the wrapper script at /usr/bin/chromium
+  // can cause issues with crashpad handler. Bypass it and use the actual binary directly.
+  if (process.platform === "linux" && exe.path === "/usr/bin/chromium") {
+    return { ...exe, path: "/usr/lib/chromium/chromium" };
+  }
+
+  return exe;
 }
 
 export function resolveOpenClawUserDataDir(profileName = DEFAULT_OPENCLAW_BROWSER_PROFILE_NAME) {
