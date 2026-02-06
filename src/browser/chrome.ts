@@ -210,6 +210,7 @@ export async function launchOpenClawChrome(
       "--password-store=basic",
       "--disable-breakpad",
       "--disable-crash-reporter",
+      "--crashpad-handler-pid=0", // Disable crashpad handler in Docker
     ];
 
     if (resolved.headless) {
