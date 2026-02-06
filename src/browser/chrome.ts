@@ -217,12 +217,25 @@ export async function launchOpenClawChrome(
     // Always open a blank tab to ensure a target exists.
     args.push("about:blank");
 
+    // Ensure HOME is writable for Chrome 128+ crashpad handler.
+    // Chrome 128+ requires $HOME/.local/share to be writable.
+    let effectiveHome = os.homedir();
+    try {
+      fs.accessSync(effectiveHome, fs.constants.W_OK);
+      fs.mkdirSync(path.join(effectiveHome, ".local", "share"), { recursive: true });
+    } catch {
+      // HOME not writable (e.g., Docker container) - use temp directory
+      effectiveHome = path.join(os.tmpdir(), "openclaw-chrome-home");
+      fs.mkdirSync(path.join(effectiveHome, ".local", "share"), { recursive: true });
+      log.debug(`HOME not writable, using fallback: ${effectiveHome}`);
+    }
+
     return spawn(exe.path, args, {
       stdio: "pipe",
       env: {
         ...process.env,
         // Reduce accidental sharing with the user's env.
-        HOME: os.homedir(),
+        HOME: effectiveHome,
       },
     });
   };
